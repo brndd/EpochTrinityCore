@@ -155,6 +155,34 @@ World::World()
     _guidAlert = false;
     _warnDiff = 0;
     _warnShutdownTime = GameTime::GetGameTime();
+
+    //Callback to update the queue position of sessions when a player gets through the queue
+    m_loginQueue.SetSessionsUpdatedCallback([this](auto begin, auto end) {
+        for (auto it = begin; it != end; ++it) {
+            uint32 session_id = *it;
+            WorldSession* session = FindSession(session_id);
+            if (!session) {
+                continue;
+            }
+            if (auto index = m_loginQueue.GetQueuePosApproximate(session_id)) {
+                session->SendAuthWaitQueue(*index);
+            }
+        }
+    });
+
+    //Callback to close sessions that get trimmed by queue resizes
+    m_loginQueue.SetSessionTrimmedCallback([this](uint32 session_id) {
+        if (auto it = m_sessions.find(session_id); it != m_sessions.end()) {
+            WorldSession* session = it->second;
+            if (!session) {
+                return;
+            }
+            session->SetInQueue(false);
+            session->ResetTimeOutTime(false);
+            m_sessions.erase(it);
+            delete session;
+        }
+    });
 }
 
 /// World destructor
@@ -328,9 +356,10 @@ void World::AddSession_(WorldSession* s)
 
     //NOTE - Still there is race condition in WorldSession* being used in the Sockets
 
+    uint32 session_id = s->GetAccountId();
     ///- kick already loaded player with same account (if any) and remove session
     ///- if player is in loading and want to load again, return
-    if (!RemoveSession(s->GetAccountId()))
+    if (!RemoveSession(session_id))
     {
         s->KickPlayer("World::AddSession_ Couldn't remove the other session while on loading screen");
         delete s;                                           // session not added yet in session list, so not listed in queue
@@ -342,22 +371,24 @@ void World::AddSession_(WorldSession* s)
 
     // if session already exist, prepare to it deleting at next world update
     // NOTE - KickPlayer() should be called on "old" in RemoveSession()
-    {
-        SessionMap::const_iterator old = m_sessions.find(s->GetAccountId());
+    SessionMap::const_iterator old = m_sessions.find(session_id);
 
-        if (old != m_sessions.end())
-        {
-            // prevent decrease sessions count if session queued
-            if (RemoveQueuedPlayer(old->second))
-                decrease_session = false;
-            // not remove replaced session form queue if listed
-            delete old->second;
+    bool stillInQueue = false;
+    if (old != m_sessions.end())
+    {
+        if (m_loginQueue.IsSessionInQueue(session_id)) {
+            //We deliberately don't delete the old ID from the queue because this lets the player keep their spot
+            //in case of unexpected weirdness. Good on them!
+            decrease_session = false;
+            stillInQueue = true;
         }
+        // not remove replaced session form queue if listed
+        delete old->second;
     }
 
-    m_sessions[s->GetAccountId()] = s;
+    m_sessions[session_id] = s;
 
-    uint32 Sessions = GetActiveAndQueuedSessionCount();
+    uint32 Sessions = GetActiveAndQueuedSessionCount(); //TODO: should this be GetActiveSessionCount, without including queue?
     uint32 pLimit = GetPlayerAmountLimit();
     uint32 QueueSize = GetQueuedSessionCount(); //number of players in the queue
 
@@ -370,8 +401,11 @@ void World::AddSession_(WorldSession* s)
     {
         AddQueuedPlayer(s);
         UpdateMaxSessionCounters();
-        TC_LOG_INFO("misc", "PlayerQueue: Account id {} is in Queue Position ({}).", s->GetAccountId(), ++QueueSize);
+        TC_LOG_INFO("misc", "PlayerQueue: Account id {} is in Queue Position ({}).", session_id, ++QueueSize);
         return;
+    }
+    if (stillInQueue) {
+        m_loginQueue.RemoveSessionFromQueue(session_id);
     }
 
     s->InitializeSession();
@@ -410,74 +444,60 @@ bool World::HasRecentlyDisconnected(WorldSession* session)
     return false;
  }
 
-int32 World::GetQueuePos(WorldSession* sess)
+int32 World::GetQueuePos(WorldSession* sess) const
 {
-    uint32 position = 1;
-
-    for (Queue::const_iterator iter = m_QueuedPlayer.begin(); iter != m_QueuedPlayer.end(); ++iter, ++position)
-        if ((*iter) == sess)
-            return position;
-
+    if (auto index = m_loginQueue.GetQueuePos(sess->GetAccountId()))
+    {
+        return *index;
+    }
     return 0;
 }
 
 void World::AddQueuedPlayer(WorldSession* sess)
 {
-    sess->SetInQueue(true);
-    m_QueuedPlayer.push_back(sess);
-
-    // The 1st SMSG_AUTH_RESPONSE needs to contain other info too.
-    sess->SendAuthResponse(AUTH_WAIT_QUEUE, false, GetQueuePos(sess));
+    if (const auto index = m_loginQueue.AddSession(sess->GetAccountId()))
+    {
+        // Added to queue
+        // The 1st SMSG_AUTH_RESPONSE needs to contain other info too.
+        sess->SetInQueue(true);
+        sess->SendAuthResponse(AUTH_WAIT_QUEUE, false, *index);
+        return;
+    }
+    //Queue is full or add failed for some other reason
+    sess->SendAuthResponse(AUTH_UNAVAILABLE, false);
 }
 
-bool World::RemoveQueuedPlayer(WorldSession* sess)
+void World::AcceptPlayerFromQueue()
 {
-    // sessions count including queued to remove (if removed_session set)
-    uint32 sessions = GetActiveSessionCount();
-
-    uint32 position = 1;
-    Queue::iterator iter = m_QueuedPlayer.begin();
-
-    // search to remove and count skipped positions
-    bool found = false;
-
-    for (; iter != m_QueuedPlayer.end(); ++iter, ++position)
-    {
-        if (*iter == sess)
-        {
-            sess->SetInQueue(false);
-            sess->ResetTimeOutTime(false);
-            iter = m_QueuedPlayer.erase(iter);
-            found = true;                                   // removing queued session
-            break;
+    if ((!m_playerLimit || GetActiveSessionCount() < m_playerLimit) && !m_loginQueue.IsEmpty()) {
+        while (auto opt = m_loginQueue.PopSession()) {
+            uint32 session_id = *opt;
+            if (session_id == 0) {
+                continue;
+            }
+            WorldSession* sess = FindSession(session_id);
+            if (!sess)
+            {
+                return;
+            }
+            sess->InitializeSession();
         }
     }
+}
 
-    // iter point to next socked after removed or end()
-    // position store position of removed socket and then new position next socket after removed
-
-    // if session not queued then we need decrease sessions count
-    if (!found && sessions)
-        --sessions;
-
-    // accept first in queue
-    if ((!m_playerLimit || sessions < m_playerLimit) && !m_QueuedPlayer.empty())
-    {
-        WorldSession* pop_sess = m_QueuedPlayer.front();
-        pop_sess->InitializeSession();
-        m_QueuedPlayer.pop_front();
-
-        // update iter to point first queued socket or end() if queue is empty now
-        iter = m_QueuedPlayer.begin();
-        position = 1;
+void World::RemoveQueuedPlayer(WorldSession* sess)
+{
+    if (!sess) {
+        return;
     }
 
-    // update position from iter to end()
-    // iter point to first not updated socket, position store new position
-    for (; iter != m_QueuedPlayer.end(); ++iter, ++position)
-        (*iter)->SendAuthWaitQueue(position);
-
-    return found;
+    uint32 session_id = sess->GetAccountId();
+    if (m_loginQueue.IsSessionInQueue(session_id))
+    {
+        m_loginQueue.RemoveSessionFromQueue(session_id);
+        sess->SetInQueue(false);
+        sess->ResetTimeOutTime(false);
+    }
 }
 
 /// Initialize config values
@@ -1566,6 +1586,13 @@ void World::LoadConfigSettings(bool reload)
 
     // Specifies if IP addresses can be logged to the database
     m_bool_configs[CONFIG_ALLOW_LOGGING_IP_ADDRESSES_IN_DATABASE] = sConfigMgr->GetBoolDefault("AllowLoggingIPAddressesInDatabase", true, true);
+
+    //Login queue
+    int loginQueueMaxSize = sConfigMgr->GetIntDefault("LoginQueue.MaxQueueSize", 100000);
+    int loginQueueBucketSize = sConfigMgr->GetIntDefault("LoginQueue.BucketSize", 100);
+    m_int_configs[CONFIG_LOGIN_QUEUE_MAX_SIZE] = loginQueueMaxSize;
+    m_int_configs[CONFIG_LOGIN_QUEUE_BUCKET_SIZE] = loginQueueBucketSize;
+    m_loginQueue.Resize(loginQueueMaxSize, loginQueueBucketSize);
 
     // call ScriptMgr if we're reloading the configuration
     if (reload)
@@ -2850,7 +2877,7 @@ void World::SendGlobalText(char const* text, WorldSession* self)
 /// Kick (and save) all players
 void World::KickAll()
 {
-    m_QueuedPlayer.clear();                                 // prevent send queue update packet and login queued sessions
+    m_loginQueue.Clear(); // prevent send queue update packet and login queued sessions
 
     // session not removed at kick and will removed in next update tick
     for (SessionMap::const_iterator itr = m_sessions.begin(); itr != m_sessions.end(); ++itr)
@@ -3194,14 +3221,21 @@ void World::UpdateSessions(uint32 diff)
         [[maybe_unused]] uint32 currentSessionId = itr->first;
         TC_METRIC_DETAILED_TIMER("world_update_sessions_time", TC_METRIC_TAG("account_id", std::to_string(currentSessionId)));
 
-        if (!pSession->Update(diff, updater))    // As interval = 0
-        {
-            if (!RemoveQueuedPlayer(itr->second) && itr->second && getIntConfig(CONFIG_INTERVAL_DISCONNECT_TOLERANCE))
-                m_disconnects[itr->second->GetAccountId()] = GameTime::GetGameTime();
-            RemoveQueuedPlayer(pSession);
-            m_sessions.erase(itr);
-            delete pSession;
 
+            //Player is disconnected
+            if (!pSession->Update(diff, updater))    // As interval = 0
+            {
+                uint32 session_id = pSession->GetAccountId();
+                if (getIntConfig(CONFIG_INTERVAL_DISCONNECT_TOLERANCE) && !m_loginQueue.IsSessionInQueue(session_id)) {
+                    m_disconnects[itr->second->GetAccountId()] = GameTime::GetGameTime();
+                }
+                //TODO: It might be possible to skip removing the player from m_loginQueue here (but still send removal packet) to allow their place in queue persist disconnects
+                RemoveQueuedPlayer(pSession);
+                m_sessions.erase(itr);
+                delete pSession;
+
+                //Accept a new player to replace this one.
+                AcceptPlayerFromQueue();
         }
     }
 }
@@ -3549,8 +3583,8 @@ void World::ResetGuildCap()
 
 void World::UpdateMaxSessionCounters()
 {
-    m_maxActiveSessionCount = std::max(m_maxActiveSessionCount, uint32(m_sessions.size()-m_QueuedPlayer.size()));
-    m_maxQueuedSessionCount = std::max(m_maxQueuedSessionCount, uint32(m_QueuedPlayer.size()));
+    m_maxActiveSessionCount = std::max(m_maxActiveSessionCount, uint32(m_sessions.size()-m_loginQueue.SessionCountApproximate()));
+    m_maxQueuedSessionCount = std::max(m_maxQueuedSessionCount, uint32(m_loginQueue.SessionCountApproximate()));
 }
 
 void World::LoadDBVersion()
@@ -3680,4 +3714,338 @@ CliCommandHolder::CliCommandHolder(void* callbackArg, char const* command, Print
 CliCommandHolder::~CliCommandHolder()
 {
     free(m_command);
+}
+
+std::size_t LoginQueueBucket::SessionCount() const {
+    std::size_t count = 0;
+    for (const uint32 s : Sessions) {
+        if (sWorld->FindSession(s)) {
+            count++;
+        }
+    }
+    return count;
+}
+
+std::optional<std::size_t> LoginQueueBucket::SessionIndex(uint32 session_id) const {
+    for (std::size_t i = 0; i < Sessions.size(); i++) {
+        if (Sessions[i] == session_id) {
+            return i;
+        }
+    }
+    return std::nullopt;
+}
+
+
+LoginQueue::LoginQueue() {
+    m_first = std::make_shared<LoginQueueBucket>();
+}
+
+void LoginQueue::Resize(std::size_t maxSessions, std::size_t bucketSize) {
+    if (!m_initialized) {
+        Init(maxSessions, bucketSize);
+        return;
+    }
+
+    auto oldFirst = m_first;
+    auto oldSecond = m_second;
+    auto oldRest = m_rest;
+
+    Clear();
+
+    m_maxSessions = maxSessions;
+    m_bucketSize = bucketSize;
+
+    std::size_t inserted = 0;
+
+    auto insertSession = [&](uint32 session_id) {
+        if (inserted >= m_maxSessions) {
+            m_onSessionTrimmed(session_id);
+            return;
+        }
+        auto& tail = _tail();
+        if (tail->SessionCountApproximate() >= m_bucketSize) {
+            auto& new_bucket = _addBucket();
+            new_bucket->Sessions.push_back(session_id);
+            m_sessionIndex.emplace(session_id, std::weak_ptr(new_bucket));
+            inserted++;
+            return;
+        }
+        tail->Sessions.push_back(session_id);
+        m_sessionIndex.emplace(session_id, std::weak_ptr(tail));
+        inserted++;
+    };
+
+    if (oldFirst) {
+        for (auto session_id : oldFirst->Sessions) {
+            if (session_id == 0) continue;
+            insertSession(session_id);
+        }
+    }
+
+    if (oldSecond) {
+        for (auto session_id : oldSecond->Sessions) {
+            if (session_id == 0) continue;
+            insertSession(session_id);
+        }
+    }
+
+    for (const auto& bucket : oldRest) {
+        for (auto session_id : bucket->Sessions) {
+            if (session_id == 0) continue;
+            insertSession(session_id);
+        }
+    }
+}
+
+std::optional<std::size_t> LoginQueue::AddSession(uint32 session_id) {
+    assert(m_initialized);
+
+    if (const auto it = m_sessionIndex.find(session_id); it != m_sessionIndex.end()) {
+        //Bucket still exists. Lucky day, they get to keep their spot!
+        if (const auto bucket = it->second.lock()) {
+            if (const auto bucket_idx = BucketIndex(bucket)) {
+                if (const auto idx = bucket->SessionIndex(session_id)) {
+                    return m_bucketSize * (*bucket_idx) + (*idx) + 1;
+                }
+            }
+        }
+        //Bucket gone. To the back with you.
+        else {
+            m_sessionIndex.erase(it);
+        }
+    }
+
+    if (SessionCountApproximate() >= m_maxSessions) {
+        return std::nullopt;
+    }
+
+    auto& tail = _tail();
+    if (tail->SessionCountApproximate() >= m_bucketSize) {
+        auto& new_bucket = _addBucket();
+        new_bucket->Sessions.push_back(session_id);
+        m_sessionIndex.emplace(session_id, std::weak_ptr(new_bucket));
+        return m_bucketSize * BucketCount() + 2; //intentional 2
+    }
+    tail->Sessions.push_back(session_id);
+    m_sessionIndex.emplace(session_id, std::weak_ptr(tail));
+    return m_bucketSize * BucketCount() + tail->SessionCountApproximate() + 1;
+}
+
+std::optional<uint32> LoginQueue::PopSession() {
+    assert(m_initialized);
+
+    if (!m_first || m_first->IsEmpty()) {
+        return std::nullopt;
+    }
+    uint32 session = m_first->Sessions.front();
+    m_first->Sessions.pop_front();
+    m_sessionIndex.erase(session);
+
+    //If this was the last session in a bucket and there's more than one bucket, rotate buckets
+    if (m_first->IsEmpty() && m_second) {
+        _popBucket();
+        //Update positions for the rest of the queue since we rotated buckets
+        if (!m_rest.empty()) {
+            for (const auto& it : m_rest) {
+                m_onSessionsUpdated(it->Sessions.begin(), it->Sessions.end());
+            }
+        }
+    }
+
+    //The first 200 users always get position updates
+    if (m_first) {
+        m_onSessionsUpdated(m_first->Sessions.begin(), m_first->Sessions.end());
+    }
+    if (m_second) {
+        m_onSessionsUpdated(m_second->Sessions.begin(), m_second->Sessions.end());
+    }
+
+    return session;
+}
+
+void LoginQueue::Clear() {
+    assert(m_initialized);
+
+    m_first = std::make_shared<LoginQueueBucket>();
+    m_second.reset();
+    m_rest.clear();
+    m_sessionIndex.clear();
+}
+
+void LoginQueue::SetSessionsUpdatedCallback(
+    std::function<void(std::deque<uint32>::const_iterator, std::deque<uint32>::const_iterator)> cb) {
+
+    m_onSessionsUpdated = std::move(cb);
+}
+
+void LoginQueue::SetSessionTrimmedCallback(std::function<void(uint32)> cb) {
+    m_onSessionTrimmed = std::move(cb);
+}
+
+void LoginQueue::RemoveSessionFromQueue(uint32 session_id) {
+    assert(m_initialized);
+
+    if (const auto it = m_sessionIndex.find(session_id); it != m_sessionIndex.end()) {
+        if (const auto bucket = it->second.lock()) {
+            auto& sessions = bucket->Sessions;
+            for (auto& id : sessions) {
+                if (id == session_id) {
+                    id = 0;
+                    break;
+                }
+            }
+        }
+        m_sessionIndex.erase(it);
+    }
+}
+
+std::optional<std::size_t> LoginQueue::GetQueuePos(uint32 session_id) const {
+    assert(m_initialized);
+
+    if (const auto it = m_sessionIndex.find(session_id); it != m_sessionIndex.end()) {
+        if (const auto bucket = it->second.lock()) {
+            if (bucket == m_first) {
+                if (const auto index = m_first->SessionIndex(session_id)) {
+                    return *index + 1;
+                }
+            }
+            if (bucket == m_second) {
+                if (const auto index = m_second->SessionIndex(session_id)) {
+                    return m_bucketSize + *index + 1;
+                }
+            }
+            for (std::size_t i = 0; i < m_rest.size(); i++) {
+                if (const auto& b = m_rest[i]; bucket == b) {
+                    if (const auto index = b->SessionIndex(session_id)) {
+                        return m_bucketSize * (i + 2) + *index + 1;
+                    }
+                }
+            }
+        }
+    }
+    return std::nullopt;
+}
+
+std::optional<std::size_t> LoginQueue::GetQueuePosApproximate(uint32 session_id) const {
+    assert(m_initialized);
+
+    if (const auto it = m_sessionIndex.find(session_id); it != m_sessionIndex.end()) {
+        if (const auto bucket = it->second.lock()) {
+            if (bucket == m_first) {
+                if (const auto index = m_first->SessionIndex(session_id)) {
+                    return *index + 1;
+                }
+            }
+            if (bucket == m_second) {
+                if (const auto index = m_second->SessionIndex(session_id)) {
+                    return m_bucketSize + *index + 1;
+                }
+            }
+            for (std::size_t i = 0; i < m_rest.size(); i++) {
+                if (const auto& b = m_rest[i]; bucket == b) {
+                    return m_bucketSize * (i + 2);
+                }
+            }
+        }
+    }
+    return std::nullopt;
+}
+
+std::size_t LoginQueue::BucketCount() const {
+    assert(m_initialized);
+
+    size_t count = 0;
+    if (m_first) {
+        count++;
+    }
+    if (m_second) {
+        count++;
+    }
+    count += m_rest.size();
+    return count;
+}
+
+std::optional<std::size_t> LoginQueue::BucketIndex(const std::shared_ptr<LoginQueueBucket> &bucket) const {
+    assert(m_initialized);
+
+    if (bucket == m_first) {
+        return 0;
+    }
+    if (bucket == m_second) {
+        return 1;
+    }
+    for (std::size_t i = 0; i < m_rest.size(); i++) {
+        if (bucket == m_rest[i]) {
+            return i + 2;
+        }
+    }
+    return std::nullopt;
+}
+
+std::size_t LoginQueue::SessionCountApproximate() const {
+    assert(m_initialized);
+
+    return BucketCount() * m_bucketSize;
+}
+
+std::size_t LoginQueue::SessionCount() const {
+    assert(m_initialized);
+
+    size_t count = 0;
+    if (m_first) {
+        count += m_first->SessionCount();
+    }
+    if (m_second) {
+        count += m_second->SessionCount();
+    }
+    for (const auto& bucket : m_rest) {
+        count += bucket->SessionCount();
+    }
+    return count;
+}
+
+std::size_t LoginQueue::IsEmpty() const {
+    assert(m_initialized);
+
+    if (m_first && !m_first->IsEmpty())
+        return false;
+    return true;
+}
+
+const std::shared_ptr<LoginQueueBucket>& LoginQueue::_addBucket() {
+    if (!m_first) {
+        m_first = std::make_shared<LoginQueueBucket>();
+        return m_first;
+    }
+    if (!m_second) {
+        m_second = std::make_shared<LoginQueueBucket>();
+        return m_second;
+    }
+    m_rest.emplace_back(std::make_shared<LoginQueueBucket>());
+    return m_rest.back();
+}
+
+void LoginQueue::_popBucket() {
+    if (m_second) {
+        m_first = std::move(m_second);
+
+        if (!m_rest.empty()) {
+            m_second = std::move(m_rest.front());
+            m_rest.pop_front();
+        }
+    }
+    else {
+        //Refresh first
+        m_first = std::make_shared<LoginQueueBucket>();
+    }
+}
+
+const std::shared_ptr<LoginQueueBucket>& LoginQueue::_tail() const {
+    if (!m_rest.empty()) {
+        return m_rest.back();
+    }
+    if (m_second) {
+        return m_second;
+    }
+    return m_first;
 }

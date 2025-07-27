@@ -402,6 +402,8 @@ enum WorldIntConfigs : uint32
     CONFIG_RESPAWN_GUIDWARNING_FREQUENCY,
     CONFIG_SOCKET_TIMEOUTTIME_ACTIVE,
     CONFIG_PENDING_MOVE_CHANGES_TIMEOUT,
+    CONFIG_LOGIN_QUEUE_MAX_SIZE,
+    CONFIG_LOGIN_QUEUE_BUCKET_SIZE,
     INT_CONFIG_VALUE_COUNT
 };
 
@@ -565,6 +567,98 @@ struct CharacterInfo
     uint32 ArenaTeamId[3];
 };
 
+struct LoginQueueBucket {
+    std::size_t SessionCountApproximate() const {
+        return Sessions.size();
+    }
+    bool IsEmpty() const {
+        return Sessions.empty();
+    }
+    std::size_t SessionCount() const;
+    std::optional<std::size_t> SessionIndex(uint32 session_id) const;
+    std::deque<uint32> Sessions;
+};
+
+class LoginQueue {
+public:
+    LoginQueue();
+
+    //Must be called before using the queue
+    void Init(std::size_t maxSessions, std::size_t bucketSize) {
+        m_maxSessions = maxSessions;
+        m_bucketSize = bucketSize;
+        m_initialized = true;
+    }
+
+    //Resizes the queue.
+    //If maxSessions is smaller than the number of sessions in the queue, excess sessions will be trimmed!
+    void Resize(std::size_t maxSessions, std::size_t bucketSize);
+
+    //Returns the position in queue the session was placed at,
+    //or std::nullopt if it wasn't added (e.g. m_maxSessions reached)
+    std::optional<std::size_t> AddSession(uint32 session_id);
+
+    //Pops the first session in the queue and returns its ID.
+    //Can return 0 if the position was vacated/invalid (pop again until you get a valid session!).
+    //Returns std::nullopt if the queue is empty.
+    std::optional<uint32> PopSession();
+
+    void Clear();
+
+    void SetSessionsUpdatedCallback(std::function<void(std::deque<uint32>::const_iterator, std::deque<uint32>::const_iterator)> cb);
+
+    void SetSessionTrimmedCallback(std::function<void(uint32)> cb);
+
+    bool IsSessionInQueue(uint32 session_id) const {
+        return m_sessionIndex.contains(session_id);
+    }
+
+    void RemoveSessionFromQueue(uint32 session_id);
+
+    std::optional<std::size_t> GetQueuePos(uint32 session_id) const;
+    std::optional<std::size_t> GetQueuePosApproximate(uint32 session_id) const;
+
+    std::size_t GetMaxSessions() const {
+        return m_maxSessions;
+    }
+
+    std::size_t GetBucketSize() const {
+        return m_bucketSize;
+    }
+
+    std::size_t BucketCount() const;
+
+    std::optional<std::size_t> BucketIndex(const std::shared_ptr<LoginQueueBucket>& bucket) const;
+
+    std::size_t SessionCountApproximate() const;
+
+    std::size_t SessionCount() const;
+    std::size_t IsEmpty() const;
+private:
+    bool m_initialized = false;
+
+    std::size_t m_maxSessions = 0;
+    std::size_t m_bucketSize = 0;
+
+    std::shared_ptr<LoginQueueBucket> m_first;
+    std::shared_ptr<LoginQueueBucket> m_second;
+    std::deque<std::shared_ptr<LoginQueueBucket>> m_rest;
+
+    std::unordered_map<uint32, std::weak_ptr<LoginQueueBucket>> m_sessionIndex;
+
+    //Callback to send position updates to sessions intelligently
+    //sessions in m_rest are only updated when buckets are shuffled.
+    std::function<void(std::deque<uint32>::const_iterator, std::deque<uint32>::const_iterator)> m_onSessionsUpdated =
+        [](std::deque<uint32>::const_iterator, std::deque<uint32>::const_iterator) {};
+
+    //Callback to close sessions trimmed due to resize
+    std::function<void(uint32)> m_onSessionTrimmed = [](uint32) {};
+
+    void _popBucket();
+    const std::shared_ptr<LoginQueueBucket>& _addBucket();
+    const std::shared_ptr<LoginQueueBucket>& _tail() const;
+};
+
 /// The World
 class TC_GAME_API World
 {
@@ -581,8 +675,8 @@ class TC_GAME_API World
         void UpdateMaxSessionCounters();
         SessionMap const& GetAllSessions() const { return m_sessions; }
         uint32 GetActiveAndQueuedSessionCount() const { return m_sessions.size(); }
-        uint32 GetActiveSessionCount() const { return m_sessions.size() - m_QueuedPlayer.size(); }
-        uint32 GetQueuedSessionCount() const { return m_QueuedPlayer.size(); }
+        uint32 GetActiveSessionCount() const { return m_sessions.size() - m_loginQueue.SessionCount(); }
+        uint32 GetQueuedSessionCount() const { return m_loginQueue.SessionCount(); }
         /// Get the maximum number of parallel sessions on the server since last reboot
         uint32 GetMaxQueuedSessionCount() const { return m_maxQueuedSessionCount; }
         uint32 GetMaxActiveSessionCount() const { return m_maxActiveSessionCount; }
@@ -617,8 +711,9 @@ class TC_GAME_API World
         //player Queue
         typedef std::list<WorldSession*> Queue;
         void AddQueuedPlayer(WorldSession*);
-        bool RemoveQueuedPlayer(WorldSession* session);
-        int32 GetQueuePos(WorldSession*);
+        void AcceptPlayerFromQueue();
+        void RemoveQueuedPlayer(WorldSession* session);
+        int32 GetQueuePos(WorldSession*) const;
         bool HasRecentlyDisconnected(WorldSession*);
 
         /// @todo Actions on m_allowMovement still to be implemented
@@ -854,7 +949,7 @@ class TC_GAME_API World
         time_t m_NextGuildReset;
 
         //Player Queue
-        Queue m_QueuedPlayer;
+        LoginQueue m_loginQueue;
 
         // sessions that are added async
         void AddSession_(WorldSession* s);
