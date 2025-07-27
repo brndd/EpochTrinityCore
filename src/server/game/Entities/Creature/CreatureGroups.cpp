@@ -24,7 +24,6 @@
 #include "MotionMaster.h"
 #include "MovementGenerator.h"
 #include "ObjectMgr.h"
-#include <winscard.h>
 
 #define MAX_DESYNC 5.0f
 

@@ -115,7 +115,7 @@ public:
             return;
 
         // Start a transaction
-        SQLTransaction trans = CharacterDatabase.BeginTransaction();
+        CharacterDatabaseTransaction trans = CharacterDatabase.BeginTransaction();
 
         do
         {

@@ -25,6 +25,7 @@
 #include <unordered_map>
 #include <vector>
 #include <mutex>
+#include <thread>
 
 //  move map related classes
 namespace MMAP
