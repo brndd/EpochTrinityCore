@@ -568,15 +568,16 @@ struct CharacterInfo
 };
 
 struct LoginQueueBucket {
-    std::size_t SessionCountApproximate() const {
-        return Sessions.size();
-    }
+    std::size_t SessionCount() const {
+        return Sessions.size() - ZeroedSessions;
+    };
     bool IsEmpty() const {
         return Sessions.empty();
     }
-    std::size_t SessionCount() const;
     std::optional<std::size_t> SessionIndex(uint32 session_id) const;
     std::deque<uint32> Sessions;
+
+    std::size_t ZeroedSessions = 0;
 };
 
 class LoginQueue {
@@ -630,8 +631,6 @@ public:
 
     std::optional<std::size_t> BucketIndex(const std::shared_ptr<LoginQueueBucket>& bucket) const;
 
-    std::size_t SessionCountApproximate() const;
-
     std::size_t SessionCount() const;
 
     bool IsEmpty() const;
@@ -646,6 +645,8 @@ private:
     std::deque<std::shared_ptr<LoginQueueBucket>> m_rest;
 
     std::unordered_map<uint32, std::weak_ptr<LoginQueueBucket>> m_sessionIndex;
+
+    std::size_t m_zeroedSessions = 0;
 
     //Callback to send position updates to sessions intelligently
     //sessions in m_rest are only updated when buckets are shuffled.
