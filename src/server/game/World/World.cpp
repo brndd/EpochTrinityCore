@@ -3500,8 +3500,8 @@ void World::ResetGuildCap()
 
 void World::UpdateMaxSessionCounters()
 {
-    m_maxActiveSessionCount = std::max(m_maxActiveSessionCount, uint32(m_sessions.size()-m_loginQueue.SessionCountApproximate()));
-    m_maxQueuedSessionCount = std::max(m_maxQueuedSessionCount, uint32(m_loginQueue.SessionCountApproximate()));
+    m_maxActiveSessionCount = std::max(m_maxActiveSessionCount, uint32(m_sessions.size()-m_loginQueue.SessionCount()));
+    m_maxQueuedSessionCount = std::max(m_maxQueuedSessionCount, uint32(m_loginQueue.SessionCount()));
 }
 
 void World::LoadDBVersion()
@@ -3633,16 +3633,6 @@ CliCommandHolder::~CliCommandHolder()
     free(m_command);
 }
 
-std::size_t LoginQueueBucket::SessionCount() const {
-    std::size_t count = 0;
-    for (const uint32 s : Sessions) {
-        if (sWorld->FindSession(s)) {
-            count++;
-        }
-    }
-    return count;
-}
-
 std::optional<std::size_t> LoginQueueBucket::SessionIndex(uint32 session_id) const {
     for (std::size_t i = 0; i < Sessions.size(); i++) {
         if (Sessions[i] == session_id) {
@@ -3680,7 +3670,7 @@ void LoginQueue::Resize(std::size_t maxSessions, std::size_t bucketSize) {
             return;
         }
         auto& tail = _tail();
-        if (tail->SessionCountApproximate() >= m_bucketSize) {
+        if (tail->Sessions.size() >= m_bucketSize) {
             auto& new_bucket = _addBucket();
             new_bucket->Sessions.push_back(session_id);
             m_sessionIndex.emplace(session_id, std::weak_ptr(new_bucket));
@@ -3732,12 +3722,12 @@ std::optional<std::size_t> LoginQueue::AddSession(uint32 session_id) {
         }
     }
 
-    if (SessionCountApproximate() >= m_maxSessions) {
+    if (SessionCount() >= m_maxSessions) {
         return std::nullopt;
     }
 
     auto& tail = _tail();
-    if (tail->SessionCountApproximate() >= m_bucketSize) {
+    if (tail->Sessions.size() >= m_bucketSize) {
         auto& new_bucket = _addBucket();
         new_bucket->Sessions.push_back(session_id);
         m_sessionIndex.emplace(session_id, std::weak_ptr(new_bucket));
@@ -3745,7 +3735,7 @@ std::optional<std::size_t> LoginQueue::AddSession(uint32 session_id) {
     }
     tail->Sessions.push_back(session_id);
     m_sessionIndex.emplace(session_id, std::weak_ptr(tail));
-    return m_bucketSize * BucketCount() + tail->SessionCountApproximate();
+    return m_bucketSize * BucketCount() + tail->Sessions.size();
 }
 
 std::optional<uint32> LoginQueue::PopSession() {
@@ -3758,6 +3748,10 @@ std::optional<uint32> LoginQueue::PopSession() {
     m_first->Sessions.pop_front();
     if (session) {
         m_sessionIndex.erase(session);
+    }
+    else {
+        m_zeroedSessions--;
+        m_first->ZeroedSessions--;
     }
 
     //If this was the last session in a bucket and there's more than one bucket, rotate buckets
@@ -3789,6 +3783,7 @@ void LoginQueue::Clear() {
     m_second.reset();
     m_rest.clear();
     m_sessionIndex.clear();
+    m_zeroedSessions = 0;
 }
 
 void LoginQueue::SetSessionsUpdatedCallback(
@@ -3810,6 +3805,8 @@ void LoginQueue::RemoveSessionFromQueue(uint32 session_id) {
             for (auto& id : sessions) {
                 if (id == session_id) {
                     id = 0;
+                    m_zeroedSessions++;
+                    bucket->ZeroedSessions++;
                     break;
                 }
             }
@@ -3901,26 +3898,9 @@ std::optional<std::size_t> LoginQueue::BucketIndex(const std::shared_ptr<LoginQu
     return std::nullopt;
 }
 
-std::size_t LoginQueue::SessionCountApproximate() const {
-    assert(m_initialized);
-
-    return BucketCount() * m_bucketSize;
-}
-
 std::size_t LoginQueue::SessionCount() const {
     assert(m_initialized);
-
-    size_t count = 0;
-    if (m_first) {
-        count += m_first->SessionCount();
-    }
-    if (m_second) {
-        count += m_second->SessionCount();
-    }
-    for (const auto& bucket : m_rest) {
-        count += bucket->SessionCount();
-    }
-    return count;
+    return m_bucketSize * (BucketCount() - 1) + _tail()->Sessions.size() - m_zeroedSessions;
 }
 
 bool LoginQueue::IsEmpty() const {
