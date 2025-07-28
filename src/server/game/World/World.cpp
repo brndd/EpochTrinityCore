@@ -3741,11 +3741,11 @@ std::optional<std::size_t> LoginQueue::AddSession(uint32 session_id) {
         auto& new_bucket = _addBucket();
         new_bucket->Sessions.push_back(session_id);
         m_sessionIndex.emplace(session_id, std::weak_ptr(new_bucket));
-        return m_bucketSize * BucketCount() + 2; //intentional 2
+        return m_bucketSize * (BucketCount() - 1) + 1;
     }
     tail->Sessions.push_back(session_id);
     m_sessionIndex.emplace(session_id, std::weak_ptr(tail));
-    return m_bucketSize * BucketCount() + tail->SessionCountApproximate() + 1;
+    return m_bucketSize * BucketCount() + tail->SessionCountApproximate();
 }
 
 std::optional<uint32> LoginQueue::PopSession() {
