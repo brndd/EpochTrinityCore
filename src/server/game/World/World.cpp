@@ -3978,7 +3978,9 @@ std::optional<uint32> LoginQueue::PopSession() {
     }
     uint32 session = m_first->Sessions.front();
     m_first->Sessions.pop_front();
-    m_sessionIndex.erase(session);
+    if (session) {
+        m_sessionIndex.erase(session);
+    }
 
     //If this was the last session in a bucket and there's more than one bucket, rotate buckets
     if (m_first->IsEmpty() && m_second) {
