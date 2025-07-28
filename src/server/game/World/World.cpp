@@ -3921,7 +3921,7 @@ std::size_t LoginQueue::SessionCount() const {
     return count;
 }
 
-std::size_t LoginQueue::IsEmpty() const {
+bool LoginQueue::IsEmpty() const {
     assert(m_initialized);
 
     if (m_first && !m_first->IsEmpty())
