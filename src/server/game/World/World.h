@@ -633,7 +633,8 @@ public:
     std::size_t SessionCountApproximate() const;
 
     std::size_t SessionCount() const;
-    std::size_t IsEmpty() const;
+
+    bool IsEmpty() const;
 private:
     bool m_initialized = false;
 
