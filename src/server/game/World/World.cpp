@@ -482,7 +482,7 @@ void World::AcceptPlayerFromQueue()
             WorldSession* sess = FindSession(session_id);
             if (!sess)
             {
-                return;
+                continue;
             }
             sess->InitializeSession();
         }
