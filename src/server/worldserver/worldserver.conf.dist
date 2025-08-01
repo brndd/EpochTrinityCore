@@ -1329,6 +1329,24 @@ CacheDataQueries = 1
 AllowLoggingIPAddressesInDatabase = 1
 
 #
+#    LoginQueue.MaxQueueSize
+#        Description: Specifies the maximum length of the login queue. When the queue is full,
+#                     players attempting to connect will be rejected.
+#        Default:     100000
+#
+
+LoginQueue.MaxQueueSize = 100000
+
+#
+#    LoginQueue.BucketSize
+#        Description: Specifies the size of login queue session buckets. Buckets determine the
+#                     precision at which players outside of the front of the queue get position updates.
+#        Default:     100
+#
+
+LoginQueue.BucketSize = 100
+
+#
 ###################################################################################################
 
 ###################################################################################################
