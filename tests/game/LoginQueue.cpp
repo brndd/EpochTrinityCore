@@ -15,13 +15,20 @@ TEST_CASE("Initialization", "[LoginQueue]") {
 
 TEST_CASE("Add and pop", "[LoginQueue]") {
     auto q = LoginQueue();
-    q.Init(100000, 100);
+    q.Init(1000, 100);
 
-    for (std::size_t i = 1; i <= 1000; i++) {
-        q.AddSession(i);
+    SECTION("adding sessions returns the queue position of the added session") {
+        for (std::size_t i = 1; i <= 1000; i++) {
+            auto opt = q.AddSession(i);
+            REQUIRE(opt != std::nullopt);
+            REQUIRE(*opt == i);
+        }
     }
 
-    SECTION("adding 1000 elements results in 1000 elements in queue") {
+    SECTION("adding 1000 sessions results in 1000 sessions in queue") {
+        for (std::size_t i = 1; i <= 1000; i++) {
+            q.AddSession(i);
+        }
         CHECK(q.SessionCount() == 1000);
         SECTION("clearing the queue results in an empty queue") {
             q.Clear();
@@ -29,7 +36,18 @@ TEST_CASE("Add and pop", "[LoginQueue]") {
         }
     }
 
-    SECTION("popping every element pops all 1000 of them and in FIFO order") {
+    SECTION("adding 1001 sessions to a queue capped at 1000 fails") {
+        for (std::size_t i = 1; i <= 1000; i++) {
+            q.AddSession(i);
+        }
+        auto opt = q.AddSession(1001);
+        CHECK(opt == std::nullopt);
+    }
+
+    SECTION("popping every session pops all 1000 of them and in FIFO order") {
+        for (std::size_t i = 1; i <= 1000; i++) {
+            q.AddSession(i);
+        }
         std::size_t popped = 0;
         while (auto opt = q.PopSession()) {
             popped++;
@@ -43,11 +61,11 @@ TEST_CASE("Add and pop", "[LoginQueue]") {
     }
 }
 
-TEST_CASE("Individual element removal", "[LoginQueue]") {
+TEST_CASE("Individual session removal", "[LoginQueue]") {
     auto q = LoginQueue();
     q.Init(100000, 100);
 
-    SECTION("removed elements should turn to zeroes") {
+    SECTION("removed sessions should turn to zeroes") {
         q.AddSession(1);
         q.RemoveSessionFromQueue(1);
         auto opt = q.PopSession();
@@ -55,13 +73,13 @@ TEST_CASE("Individual element removal", "[LoginQueue]") {
         CHECK(*opt == 0);
     }
 
-    SECTION("removed elements aren't reported in queue") {
+    SECTION("removed sessions aren't reported in queue") {
         q.AddSession(1);
         q.RemoveSessionFromQueue(1);
         CHECK(!q.IsSessionInQueue(1));
     }
 
-    SECTION("removed elements don't count towards total") {
+    SECTION("removed sessions don't count towards total") {
         for (std::size_t i = 1; i <= 1000; i++) {
             q.AddSession(i);
         }
@@ -85,7 +103,7 @@ TEST_CASE("IsSessionInQueue", "[LoginQueue]") {
     CHECK(!q.IsSessionInQueue(1001));
 
     q.RemoveSessionFromQueue(1);
-    INFO("removing an element doesn't cause blank ID to report as in queue");
+    INFO("removing a session doesn't cause blank ID to report as in queue");
     CHECK(!q.IsSessionInQueue(0));
 }
 
@@ -96,17 +114,17 @@ TEST_CASE("Resize", "[LoginQueue]") {
         q.AddSession(i);
     }
 
-    SECTION("changing bucket size preserves elements") {
-        INFO("adding 1000 elements with bucketSize 100 results in 1000 elements across 10 buckets");
+    SECTION("changing bucket size preserves sessions") {
+        INFO("adding 1000 sessions with bucketSize 100 results in 1000 sessions across 10 buckets");
         REQUIRE(q.SessionCount() == 1000);
         REQUIRE(q.BucketCount() == 10);
 
-        INFO("resizing to bucketSize 200 results in 1000 elements across 5 buckets");
+        INFO("resizing to bucketSize 200 results in 1000 sessions across 5 buckets");
         q.Resize(100000, 200);
         REQUIRE(q.SessionCount() == 1000);
         REQUIRE(q.BucketCount() == 5);
 
-        SECTION("popping all elements from a resized queue pops all 1000 of them in FIFO order") {
+        SECTION("popping all sessions from a resized queue pops all 1000 of them in FIFO order") {
             std::size_t popped = 0;
             while (auto opt = q.PopSession()) {
                 popped++;
@@ -115,7 +133,7 @@ TEST_CASE("Resize", "[LoginQueue]") {
             CHECK(popped == 1000);
         }
 
-        SECTION("changing bucket size cleans up removed (zeroed) elements") {
+        SECTION("changing bucket size cleans up removed (zeroed) sessions") {
             for (std::size_t i = 2; i <= 1000; i += 2) {
                 q.RemoveSessionFromQueue(i);
             }
@@ -130,7 +148,7 @@ TEST_CASE("Resize", "[LoginQueue]") {
         CHECK(q.SessionCount() == 500);
         CHECK(q.BucketCount() == 5);
 
-        SECTION("popping elements out of a truncated queue pops 500 of them in FIFO order") {
+        SECTION("popping sessions out of a truncated queue pops 500 of them in FIFO order") {
             std::size_t popped = 0;
             while (auto opt = q.PopSession()) {
                 popped++;
