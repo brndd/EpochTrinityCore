@@ -628,8 +628,6 @@ public:
 
     std::size_t BucketCount() const;
 
-    std::optional<std::size_t> BucketIndex(const std::shared_ptr<LoginQueueBucket>& bucket) const;
-
     std::size_t SessionCount() const;
 
     bool IsEmpty() const;
@@ -658,6 +656,7 @@ private:
     void _popBucket();
     const std::shared_ptr<LoginQueueBucket>& _addBucket();
     const std::shared_ptr<LoginQueueBucket>& _tail() const;
+    std::optional<std::size_t> _bucketIndex(const std::shared_ptr<LoginQueueBucket>& bucket) const;
 };
 
 /// The World
