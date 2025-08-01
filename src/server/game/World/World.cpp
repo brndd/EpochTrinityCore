@@ -3932,7 +3932,7 @@ std::optional<std::size_t> LoginQueue::AddSession(uint32 session_id) {
     if (const auto it = m_sessionIndex.find(session_id); it != m_sessionIndex.end()) {
         //Bucket still exists. Lucky day, they get to keep their spot!
         if (const auto bucket = it->second.lock()) {
-            if (const auto bucket_idx = BucketIndex(bucket)) {
+            if (const auto bucket_idx = _bucketIndex(bucket)) {
                 if (const auto idx = bucket->SessionIndex(session_id)) {
                     return m_bucketSize * (*bucket_idx) + (*idx) + 1;
                 }
@@ -4103,7 +4103,7 @@ std::size_t LoginQueue::BucketCount() const {
     return count;
 }
 
-std::optional<std::size_t> LoginQueue::BucketIndex(const std::shared_ptr<LoginQueueBucket> &bucket) const {
+std::optional<std::size_t> LoginQueue::_bucketIndex(const std::shared_ptr<LoginQueueBucket> &bucket) const {
     assert(m_initialized);
 
     if (bucket == m_first) {
