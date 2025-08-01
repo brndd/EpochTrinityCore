@@ -8,9 +8,41 @@ void DummySessionTrimmedCallback(uint32 sessionId) {}
 
 TEST_CASE("Initialization", "[LoginQueue]") {
     auto q = LoginQueue();
-    q.Init(100000, 100);
-    CHECK(q.GetMaxSessions() == 100000);
-    CHECK(q.GetBucketSize() == 100);
+
+    SECTION("initializing with sensible values") {
+        q.Init(100000, 100);
+        CHECK(q.GetMaxSessions() == 100000);
+        CHECK(q.GetBucketSize() == 100);
+    }
+
+    SECTION("initializing with unusual values") {
+        q.Init(10, 100);
+        CHECK(q.GetMaxSessions() == 10);
+        CHECK(q.GetBucketSize() == 100);
+        for (std::size_t i = 1; i <= 10; i++) {
+            q.AddSession(i);
+        }
+        CHECK(q.SessionCount() == 10);
+        CHECK(q.BucketCount() == 1);
+        CHECK(q.AddSession(11) == std::nullopt);
+    }
+
+    SECTION("initializing with unusual values 2") {
+        q.Init(1, 1);
+        CHECK(q.GetMaxSessions() == 1);
+        CHECK(q.GetBucketSize() == 1);
+        q.AddSession(1);
+        CHECK(q.SessionCount() == 1);
+        CHECK(q.BucketCount() == 1);
+        CHECK(q.AddSession(2) == std::nullopt);
+    }
+
+    SECTION("initializing with zeroes") {
+        q.Init(0, 0);
+        CHECK(q.GetMaxSessions() == 0);
+        CHECK(q.BucketCount() == 1);
+        CHECK(q.AddSession(1) == std::nullopt);
+    }
 }
 
 TEST_CASE("Add and pop", "[LoginQueue]") {
