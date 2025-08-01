@@ -107,6 +107,25 @@ TEST_CASE("IsSessionInQueue", "[LoginQueue]") {
     CHECK(!q.IsSessionInQueue(0));
 }
 
+TEST_CASE("GetQueuePosition and GetQueuePositionApproximate", "[LoginQueue]") {
+    auto q = LoginQueue();
+    q.Init(100000, 100);
+    for (std::size_t i = 1; i <= 1000; i++) {
+        q.AddSession(i);
+    }
+
+    CHECK(q.GetQueuePos(1) == 1);
+    CHECK(q.GetQueuePos(99) == 99);
+    CHECK(q.GetQueuePosApproximate(99) == 99);
+    CHECK(q.GetQueuePos(150) == 150);
+    CHECK(q.GetQueuePosApproximate(150) == 150);
+    CHECK(q.GetQueuePosApproximate(550) == 500);
+    CHECK(q.GetQueuePos(0) == std::nullopt);
+    CHECK(q.GetQueuePosApproximate(0) == std::nullopt);
+    CHECK(q.GetQueuePos(1001) == std::nullopt);
+    CHECK(q.GetQueuePosApproximate(1001) == std::nullopt);
+}
+
 TEST_CASE("Resize", "[LoginQueue]") {
     auto q = LoginQueue();
     q.Init(100000, 100);
