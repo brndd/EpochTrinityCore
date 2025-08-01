@@ -3735,7 +3735,7 @@ std::optional<std::size_t> LoginQueue::AddSession(uint32 session_id) {
     }
     tail->Sessions.push_back(session_id);
     m_sessionIndex.emplace(session_id, std::weak_ptr(tail));
-    return m_bucketSize * BucketCount() + tail->Sessions.size();
+    return m_bucketSize * (BucketCount() - 1) + tail->Sessions.size();
 }
 
 std::optional<uint32> LoginQueue::PopSession() {
