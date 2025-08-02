@@ -485,6 +485,7 @@ void World::AcceptPlayerFromQueue()
                 continue;
             }
             sess->InitializeSession();
+            return;
         }
     }
 }
